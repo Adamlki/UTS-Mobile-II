@@ -17,32 +17,18 @@ package com.example.unscramble.ui
 
 import android.app.Activity
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.*
 import androidx.compose.material3.MaterialTheme.colorScheme
 import androidx.compose.material3.MaterialTheme.shapes
 import androidx.compose.material3.MaterialTheme.typography
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,12 +42,29 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.unscramble.R
+import com.example.unscramble.data.GameDatabase
+import com.example.unscramble.data.GamePreferences
+import com.example.unscramble.data.GameRepository
 import com.example.unscramble.ui.theme.UnscrambleTheme
+import java.text.SimpleDateFormat
+import java.util.*
 
 @Composable
-fun GameScreen(gameViewModel: GameViewModel = viewModel()) {
+fun GameScreen() {
+    val context = LocalContext.current
+    val db = remember { GameDatabase.getDatabase(context) }
+    val repository = remember { GameRepository(db.correctWordDao()) }
+    val prefs = remember { GamePreferences(context) }
+    val gameViewModel: GameViewModel = viewModel(
+        factory = GameViewModel.factory(repository, prefs)
+    )
+
     val gameUiState by gameViewModel.uiState.collectAsState()
+    val correctWordsHistory by gameViewModel.correctWordsHistory.collectAsState(initial = emptyList())
     val mediumPadding = dimensionResource(R.dimen.padding_medium)
+
+    // State untuk tampilkan dialog history
+    var showHistory by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -72,7 +75,6 @@ fun GameScreen(gameViewModel: GameViewModel = viewModel()) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-
         Text(
             text = stringResource(R.string.app_name),
             style = typography.titleLarge,
@@ -96,26 +98,31 @@ fun GameScreen(gameViewModel: GameViewModel = viewModel()) {
             verticalArrangement = Arrangement.spacedBy(mediumPadding),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-
             Button(
                 modifier = Modifier.fillMaxWidth(),
                 onClick = { gameViewModel.checkUserGuess() }
             ) {
-                Text(
-                    text = stringResource(R.string.submit),
-                    fontSize = 16.sp
-                )
+                Text(text = stringResource(R.string.submit), fontSize = 16.sp)
             }
 
-            OutlinedButton(
-                onClick = { gameViewModel.skipWord() },
-                modifier = Modifier.fillMaxWidth()
+            // Row: Skip + History berdampingan
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(mediumPadding)
             ) {
-                Text(
-                    text = stringResource(R.string.skip),
-                    fontSize = 16.sp
-                )
+                OutlinedButton(
+                    onClick = { gameViewModel.skipWord() },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(text = stringResource(R.string.skip), fontSize = 16.sp)
+                }
 
+                OutlinedButton(
+                    onClick = { showHistory = true },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(text = "History", fontSize = 16.sp)
+                }
             }
         }
 
@@ -128,19 +135,80 @@ fun GameScreen(gameViewModel: GameViewModel = viewModel()) {
             )
         }
     }
+
+    // Dialog History
+    if (showHistory) {
+        HistoryDialog(
+            words = correctWordsHistory,
+            onDismiss = { showHistory = false }
+        )
+    }
+}
+
+@Composable
+fun HistoryDialog(
+    words: List<com.example.unscramble.data.CorrectWordEntity>,
+    onDismiss: () -> Unit
+) {
+    val dateFormat = remember { SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = "History Jawaban Benar") },
+        text = {
+            if (words.isEmpty()) {
+                Text(
+                    text = "Belum ada kata yang berhasil ditebak.",
+                    style = typography.bodyMedium,
+                    modifier = Modifier.padding(vertical = 8.dp)
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 300.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    items(words) { item ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = colorScheme.secondaryContainer
+                            )
+                        ) {
+                            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                Text(
+                                    text = item.word,
+                                    style = typography.titleMedium,
+                                    color = colorScheme.onSecondaryContainer
+                                )
+                                Text(
+                                    text = dateFormat.format(Date(item.timestamp)),
+                                    style = typography.bodySmall,
+                                    color = colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = "Tutup")
+            }
+        }
+    )
 }
 
 @Composable
 fun GameStatus(score: Int, modifier: Modifier = Modifier) {
-    Card(
-        modifier = modifier
-    ) {
+    Card(modifier = modifier) {
         Text(
             text = stringResource(R.string.score, score),
             style = typography.headlineMedium,
             modifier = Modifier.padding(8.dp)
         )
-
     }
 }
 
@@ -155,7 +223,6 @@ fun GameLayout(
     modifier: Modifier = Modifier
 ) {
     val mediumPadding = dimensionResource(R.dimen.padding_medium)
-
     Card(
         modifier = modifier,
         elevation = CardDefaults.cardElevation(defaultElevation = 5.dp)
@@ -175,10 +242,7 @@ fun GameLayout(
                 style = typography.titleMedium,
                 color = colorScheme.onPrimary
             )
-            Text(
-                text = currentScrambledWord,
-                style = typography.displayMedium
-            )
+            Text(text = currentScrambledWord, style = typography.displayMedium)
             Text(
                 text = stringResource(R.string.instructions),
                 textAlign = TextAlign.Center,
@@ -196,50 +260,27 @@ fun GameLayout(
                 ),
                 onValueChange = onUserGuessChanged,
                 label = {
-                    if (isGuessWrong) {
-                        Text(stringResource(R.string.wrong_guess))
-                    } else {
-                        Text(stringResource(R.string.enter_your_word))
-                    }
+                    if (isGuessWrong) Text(stringResource(R.string.wrong_guess))
+                    else Text(stringResource(R.string.enter_your_word))
                 },
                 isError = isGuessWrong,
-                keyboardOptions = KeyboardOptions.Default.copy(
-                    imeAction = ImeAction.Done
-                ),
-                keyboardActions = KeyboardActions(
-                    onDone = { onKeyboardDone() }
-                )
+                keyboardOptions = KeyboardOptions.Default.copy(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { onKeyboardDone() })
             )
         }
     }
 }
 
-/*
- * Creates and shows an AlertDialog with final score.
- */
 @Composable
-private fun FinalScoreDialog(
-    score: Int,
-    onPlayAgain: () -> Unit,
-    modifier: Modifier = Modifier
-) {
+private fun FinalScoreDialog(score: Int, onPlayAgain: () -> Unit, modifier: Modifier = Modifier) {
     val activity = (LocalContext.current as Activity)
-
     AlertDialog(
-        onDismissRequest = {
-            // Dismiss the dialog when the user clicks outside the dialog or on the back
-            // button. If you want to disable that functionality, simply use an empty
-            // onCloseRequest.
-        },
+        onDismissRequest = {},
         title = { Text(text = stringResource(R.string.congratulations)) },
         text = { Text(text = stringResource(R.string.you_scored, score)) },
         modifier = modifier,
         dismissButton = {
-            TextButton(
-                onClick = {
-                    activity.finish()
-                }
-            ) {
+            TextButton(onClick = { activity.finish() }) {
                 Text(text = stringResource(R.string.exit))
             }
         },
@@ -254,7 +295,5 @@ private fun FinalScoreDialog(
 @Preview(showBackground = true)
 @Composable
 fun GameScreenPreview() {
-    UnscrambleTheme {
-        GameScreen()
-    }
+    UnscrambleTheme { GameScreen() }
 }

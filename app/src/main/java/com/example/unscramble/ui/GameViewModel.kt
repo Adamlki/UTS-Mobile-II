@@ -20,117 +20,128 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.example.unscramble.data.CorrectWordEntity
+import com.example.unscramble.data.GamePreferences
+import com.example.unscramble.data.GameRepository
 import com.example.unscramble.data.MAX_NO_OF_WORDS
 import com.example.unscramble.data.SCORE_INCREASE
 import com.example.unscramble.data.allWords
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 
-/**
- * ViewModel containing the app data and methods to process the data
- */
-class GameViewModel : ViewModel() {
+class GameViewModel(
+    private val repository: GameRepository,
+    private val prefs: GamePreferences
+) : ViewModel() {
 
-    // Game UI state
     private val _uiState = MutableStateFlow(GameUiState())
     val uiState: StateFlow<GameUiState> = _uiState.asStateFlow()
 
     var userGuess by mutableStateOf("")
         private set
 
-    // Set of words used in the game
+    // History kata benar dari DB (Flow)
+    val correctWordsHistory = repository.getAllCorrectWords()
+
     private var usedWords: MutableSet<String> = mutableSetOf()
     private lateinit var currentWord: String
 
     init {
-        resetGame()
+        // Restore game state dari DataStore saat init
+        viewModelScope.launch {
+            val savedScore = prefs.score.first()
+            val savedWordCount = prefs.wordCount.first()
+            val savedUsedWordsStr = prefs.usedWords.first()
+            val savedCurrentWord = prefs.currentWord.first()
+            val savedIsGameOver = prefs.isGameOver.first()
+
+            if (savedUsedWordsStr.isNotEmpty()) {
+                // Ada saved state, restore
+                usedWords = savedUsedWordsStr.split(",").toMutableSet()
+                currentWord = savedCurrentWord.ifEmpty {
+                    pickRandomWordAndShuffle()
+                }
+                _uiState.value = GameUiState(
+                    currentScrambledWord = shuffleCurrentWord(currentWord),
+                    currentWordCount = savedWordCount,
+                    score = savedScore,
+                    isGameOver = savedIsGameOver
+                )
+            } else {
+                // Fresh start
+                resetGame()
+            }
+        }
     }
 
-    /*
-     * Re-initializes the game data to restart the game.
-     */
     fun resetGame() {
         usedWords.clear()
-        _uiState.value = GameUiState(currentScrambledWord = pickRandomWordAndShuffle())
+        val scrambled = pickRandomWordAndShuffle()
+        _uiState.value = GameUiState(currentScrambledWord = scrambled)
+        viewModelScope.launch {
+            prefs.saveGameState(0, 1, usedWords, currentWord, false)
+        }
     }
 
-    /*
-     * Update the user's guess
-     */
-    fun updateUserGuess(guessedWord: String){
+    fun updateUserGuess(guessedWord: String) {
         userGuess = guessedWord
     }
 
-    /*
-     * Checks if the user's guess is correct.
-     * Increases the score accordingly.
-     */
     fun checkUserGuess() {
         if (userGuess.equals(currentWord, ignoreCase = true)) {
-            // User's guess is correct, increase the score
-            // and call updateGameState() to prepare the game for next round
+            // Simpan kata benar ke database
+            viewModelScope.launch {
+                repository.insertCorrectWord(currentWord)
+            }
             val updatedScore = _uiState.value.score.plus(SCORE_INCREASE)
             updateGameState(updatedScore)
         } else {
-            // User's guess is wrong, show an error
-            _uiState.update { currentState ->
-                currentState.copy(isGuessedWordWrong = true)
-            }
+            _uiState.update { it.copy(isGuessedWordWrong = true) }
         }
-        // Reset user guess
         updateUserGuess("")
     }
 
-    /*
-     * Skip to next word
-     */
     fun skipWord() {
         updateGameState(_uiState.value.score)
-        // Reset user guess
         updateUserGuess("")
     }
 
-    /*
-     * Picks a new currentWord and currentScrambledWord and updates UiState according to
-     * current game state.
-     */
     private fun updateGameState(updatedScore: Int) {
-        if (usedWords.size == MAX_NO_OF_WORDS){
-            //Last round in the game, update isGameOver to true, don't pick a new word
-            _uiState.update { currentState ->
-                currentState.copy(
-                    isGuessedWordWrong = false,
-                    score = updatedScore,
-                    isGameOver = true
-                )
+        if (usedWords.size == MAX_NO_OF_WORDS) {
+            _uiState.update { it.copy(isGuessedWordWrong = false, score = updatedScore, isGameOver = true) }
+            viewModelScope.launch {
+                prefs.saveGameState(updatedScore, _uiState.value.currentWordCount, usedWords, currentWord, true)
             }
-        } else{
-            // Normal round in the game
-            _uiState.update { currentState ->
-                currentState.copy(
+        } else {
+            val newScrambled = pickRandomWordAndShuffle()
+            _uiState.update {
+                it.copy(
                     isGuessedWordWrong = false,
-                    currentScrambledWord = pickRandomWordAndShuffle(),
-                    currentWordCount = currentState.currentWordCount.inc(),
+                    currentScrambledWord = newScrambled,
+                    currentWordCount = it.currentWordCount.inc(),
                     score = updatedScore
                 )
+            }
+            viewModelScope.launch {
+                prefs.saveGameState(updatedScore, _uiState.value.currentWordCount, usedWords, currentWord, false)
             }
         }
     }
 
     private fun shuffleCurrentWord(word: String): String {
         val tempWord = word.toCharArray()
-        // Scramble the word
         tempWord.shuffle()
-        while (String(tempWord) == word) {
-            tempWord.shuffle()
-        }
+        while (String(tempWord) == word) tempWord.shuffle()
         return String(tempWord)
     }
 
     private fun pickRandomWordAndShuffle(): String {
-        // Continue picking up a new random word until you get one that hasn't been used before
         currentWord = allWords.random()
         return if (usedWords.contains(currentWord)) {
             pickRandomWordAndShuffle()
@@ -138,5 +149,15 @@ class GameViewModel : ViewModel() {
             usedWords.add(currentWord)
             shuffleCurrentWord(currentWord)
         }
+    }
+
+    // Factory untuk inject dependency
+    companion object {
+        fun factory(repository: GameRepository, prefs: GamePreferences): ViewModelProvider.Factory =
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                    GameViewModel(repository, prefs) as T
+            }
     }
 }

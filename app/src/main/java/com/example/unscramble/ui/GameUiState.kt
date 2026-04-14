@@ -25,3 +25,5 @@ data class GameUiState(
     val isGuessedWordWrong: Boolean = false,
     val isGameOver: Boolean = false
 )
+
+

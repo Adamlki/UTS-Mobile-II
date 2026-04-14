@@ -115,6 +115,7 @@ fun GameScreen(gameViewModel: GameViewModel = viewModel()) {
                     text = stringResource(R.string.skip),
                     fontSize = 16.sp
                 )
+
             }
         }
 
